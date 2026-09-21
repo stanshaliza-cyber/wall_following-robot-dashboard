@@ -1,6 +1,6 @@
 """
-Streamlit Dashboard: Warehouse AGV MDP Navigation (Pre-drawn Path & Clean Layout)
-=================================================================================
+Streamlit Dashboard: Warehouse AGV MDP Navigation (Logical Obstacle Walls & Corridors)
+=====================================================================================
 Run with:
     streamlit run wall_following_streamlit.py
 """
@@ -105,7 +105,6 @@ def step_simulation():
     sd_left = row['SD_left']
     dataset_action = row['Class']
 
-    # Optimal classification thresholds hardcoded
     if sd_left < 0.53:
         state = 'Too-Close'
     elif sd_left > 0.71:
@@ -127,10 +126,10 @@ def step_simulation():
     ss.idx += 1
 
 # ---------------------------------------------------------------------
-# 4. Streamlit Dashboard Layout (Larger Motion Window & Compact Legend)
+# 4. Streamlit Dashboard Layout
 # ---------------------------------------------------------------------
 st.title("📦 Warehouse AGV MDP Optimal Navigation")
-st.markdown("AGV cursor tracing the **pre-drawn optimal dataset path** from the Entry Gate around storage racks to the Exit Gate.")
+st.markdown("AGV cursor navigating through structured warehouse aisles around physical storage blocks from Entry to Exit.")
 
 col_left, col_right = st.columns([3.0, 1.0])
 
@@ -162,56 +161,58 @@ with col_right:
     st.code("\n".join(st.session_state.log[-10:]) if st.session_state.log else "—", language=None)
 
 # ---------------------------------------------------------------------
-# 5. Warehouse Blueprint & Pre-drawn Path Rendering
+# 5. Warehouse Blueprint & Obstacle Corridor Rendering
 # ---------------------------------------------------------------------
 def render_warehouse():
     ss = st.session_state
-    # Increased plot size for a larger motion window
     fig, ax = plt.subplots(figsize=(9, 7.5))
     
     fig.patch.set_facecolor('#0b0f19')
     ax.set_facecolor('#0b0f19')
     ax.set_aspect('equal')
 
-    # Warehouse Outer Walls
-    ax.plot([0, 12, 12, 0, 0], [0, 0, 10, 10, 0], color='#38bdf8', linewidth=3.5, label="Walls")
+    # Warehouse Outer Boundary Walls
+    ax.plot([0, 12, 12, 0, 0], [0, 0, 10, 10, 0], color='#38bdf8', linewidth=3.5, label="Outer Walls")
 
     # Entry and Exit Gates
-    ax.scatter([ENTRY_POS['x']], [ENTRY_POS['y']], color='#22c55e', s=200, zorder=6, marker='o', edgecolors='white', linewidths=1.5, label="Entry")
-    ax.scatter([EXIT_POS['x']], [EXIT_POS['y']], color='#ef4444', s=200, zorder=6, marker='X', edgecolors='white', linewidths=1.5, label="Exit")
+    ax.scatter([ENTRY_POS['x']], [ENTRY_POS['y']], color='#22c55e', s=200, zorder=7, marker='o', edgecolors='white', linewidths=1.5, label="Entry")
+    ax.scatter([EXIT_POS['x']], [EXIT_POS['y']], color='#ef4444', s=200, zorder=7, marker='X', edgecolors='white', linewidths=1.5, label="Exit")
 
-    # Internal Fulfillment Storage Racks (Obstacles)
+    # Storage Racks (Solid Obstacles with barrier outlines)
     racks = [
-        ([2.5, 5.0, 5.0, 2.5, 2.5], [2.0, 2.0, 4.5, 4.5, 2.0]),
-        ([7.0, 9.5, 9.5, 7.0, 7.0], [2.0, 2.0, 4.5, 4.5, 2.0]),
-        ([2.5, 5.0, 5.0, 2.5, 2.5], [5.5, 5.5, 8.0, 8.0, 5.5]),
-        ([7.0, 9.5, 9.5, 7.0, 7.0], [5.5, 5.5, 8.0, 8.0, 5.5]),
+        ([2.0, 5.0, 5.0, 2.0, 2.0], [1.5, 1.5, 4.5, 4.5, 1.5]),
+        ([7.0, 10.0, 10.0, 7.0, 7.0], [1.5, 1.5, 4.5, 4.5, 1.5]),
+        ([2.0, 5.0, 5.0, 2.0, 2.0], [5.5, 5.5, 8.5, 8.5, 5.5]),
+        ([7.0, 10.0, 10.0, 7.0, 7.0], [5.5, 5.5, 8.5, 8.5, 5.5]),
     ]
     for rx, ry in racks:
-        ax.fill(rx, ry, color='#1e293b', edgecolor='#64748b', linewidth=1.5, zorder=2)
-        ax.text(np.mean(rx), np.mean(ry), "RACK", color='#64748b', fontsize=7, ha='center', va='center', fontweight='bold', alpha=0.7, zorder=3)
+        # Fill rack block
+        ax.fill(rx, ry, color='#1e293b', zorder=2)
+        # Rack border walls acting as physical obstructions
+        ax.plot(rx, ry, color='#64748b', linewidth=2.0, zorder=3, label="Rack Barrier" if rx == racks[0][0] else "")
+        ax.text(np.mean(rx), np.mean(ry), "STORAGE\nRACK", color='#94a3b8', fontsize=7, ha='center', va='center', fontweight='bold', alpha=0.8, zorder=4)
 
-    # 1. PRE-DRAWN FULL PATH (Entire path visible in background)
+    # 1. PRE-DRAWN FULL PATH (Aisle centerline track)
     all_tx = [p['x'] for p in PRECOMPUTED_TRAJ]
     all_ty = [p['y'] for p in PRECOMPUTED_TRAJ]
-    ax.plot(all_tx, all_ty, color='#1e3a8a', linewidth=2.0, linestyle='--', label="Full Path", zorder=4)
+    ax.plot(all_tx, all_ty, color='#1d4ed8', linewidth=2.0, linestyle='--', label="Target Path", zorder=5)
 
-    # 2. TRAVELLED PATH TRACE (Bright trace showing progress up to current step)
+    # 2. TRAVELLED PATH TRACE
     current_idx = min(ss.idx, len(PRECOMPUTED_TRAJ) - 1)
     if current_idx > 0:
         travelled_traj = PRECOMPUTED_TRAJ[: current_idx + 1]
         ttx = [p['x'] for p in travelled_traj]
         tty = [p['y'] for p in travelled_traj]
-        ax.plot(ttx, tty, color='#38bdf8', linewidth=3.0, alpha=0.9, label="Traveled", zorder=5)
+        ax.plot(ttx, tty, color='#38bdf8', linewidth=3.0, alpha=0.9, label="Traveled", zorder=6)
 
     # 3. AGV Cursor Head
     cur_pos = PRECOMPUTED_TRAJ[current_idx]
-    ax.scatter([cur_pos['x']], [cur_pos['y']], color='#facc15', s=220, zorder=7, marker='s', edgecolors='white', linewidths=1.5, label="AGV")
+    ax.scatter([cur_pos['x']], [cur_pos['y']], color='#facc15', s=220, zorder=8, marker='s', edgecolors='white', linewidths=1.5, label="AGV")
 
     ax.set_xlim(-1, 13)
     ax.set_ylim(-1, 11)
     
-    # Compact Legend placed cleanly in the corner
+    # Compact Legend
     ax.legend(loc='upper right', framealpha=0.6, fontsize=6.5, facecolor='#1e293b', edgecolor='none', labelcolor='white', ncol=2)
     ax.axis('off')
     
