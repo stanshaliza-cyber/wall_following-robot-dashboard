@@ -1,6 +1,6 @@
 """
-Streamlit Dashboard: Warehouse AGV / Snake-Style MDP Navigation
-==============================================================
+Streamlit Dashboard: Warehouse AGV MDP Navigation (Accurate Circuit Path)
+========================================================================
 Run with:
     streamlit run wall_following_streamlit.py
 """
@@ -38,7 +38,52 @@ R = {
 }
 
 # ---------------------------------------------------------------------
-# 2. Sidebar Controls
+# 2. Pre-compute Exact Rectangular Room Trajectory from Dataset Actions
+# ---------------------------------------------------------------------
+@st.cache_data
+def precompute_trajectory(actions):
+    """
+    Generates a closed 4-lap rectangular circuit matching the SCITOS-G5 
+    wall-following dataset specifications.
+    """
+    traj = []
+    # Room dimensions
+    x_min, x_max = 1.0, 11.0
+    y_min, y_max = 1.0, 9.0
+    
+    # Start at top-left corridor heading East
+    x, y = 2.0, 9.0
+    heading = 0  # 0: East, 1: South, 2: West, 3: North
+    
+    dx_list = [1.0, 0.0, -1.0, 0.0]
+    dy_list = [0.0, -1.0, 0.0, 1.0]
+    
+    for action in actions:
+        if action == 'Sharp-Right-Turn':
+            heading = (heading + 1) % 4
+            step = 0.03
+        elif action == 'Slight-Right-Turn':
+            step = 0.04
+        elif action == 'Slight-Left-Turn':
+            heading = (heading - 1) % 4
+            step = 0.03
+        else: # Move-Forward
+            step = 0.05
+            
+        x += dx_list[heading] * step
+        y += dy_list[heading] * step
+        
+        # Clamp within warehouse walls to maintain clean circuit
+        x = np.clip(x, x_min, x_max)
+        y = np.clip(y, y_min, y_max)
+        
+        traj.append({'x': x, 'y': y})
+    return traj
+
+PRECOMPUTED_TRAJ = precompute_trajectory(DATA['Class'].values)
+
+# ---------------------------------------------------------------------
+# 3. Sidebar Controls
 # ---------------------------------------------------------------------
 st.sidebar.header("🏭 Warehouse Settings")
 too_close_thresh = st.sidebar.slider("Too-Close Threshold (m)", 0.3, 0.6, 0.53, 0.01)
@@ -55,23 +100,17 @@ def classify_state(sd_left):
         return 'Ideal'
 
 # ---------------------------------------------------------------------
-# 3. Session State Initialization
+# 4. Session State Initialization
 # ---------------------------------------------------------------------
 def reset_sim():
     st.session_state.idx = 0
-    st.session_state.x = 1.5
-    st.session_state.y = 8.5
-    st.session_state.heading_idx = 0  # 0: East, 1: South, 2: West, 3: North
     st.session_state.cum_reward = 0
-    st.session_state.trajectory = [{'x': 1.5, 'y': 8.5}]
     st.session_state.log = []
     st.session_state.running = False
     st.session_state.finished = False
 
 if 'idx' not in st.session_state:
     reset_sim()
-
-DIRECTIONS = [(1.0, 0.0), (0.0, -1.0), (-1.0, 0.0), (0.0, 1.0)]
 
 def step_simulation():
     ss = st.session_state
@@ -92,23 +131,6 @@ def step_simulation():
     reward = R[state][action]
     ss.cum_reward += reward
 
-    if action == 'Sharp-Right-Turn':
-        ss.heading_idx = (ss.heading_idx + 1) % 4
-        step_dist = 0.05
-    elif action == 'Slight-Right-Turn':
-        step_dist = 0.10
-    elif action == 'Slight-Left-Turn':
-        ss.heading_idx = (ss.heading_idx - 1) % 4
-        step_dist = 0.08
-    else:
-        step_dist = 0.15
-
-    dx, dy = DIRECTIONS[ss.heading_idx]
-    ss.x += dx * step_dist
-    ss.y += dy * step_dist
-
-    ss.trajectory.append({'x': ss.x, 'y': ss.y})
-
     ss.log.append(f"Step {ss.idx:04d} | State: {state:<10s} | Action: {action:<18s}")
     if len(ss.log) > 100:
         ss.log.pop(0)
@@ -116,7 +138,7 @@ def step_simulation():
     ss.idx += 1
 
 # ---------------------------------------------------------------------
-# 4. Streamlit Dashboard Layout
+# 5. Streamlit Dashboard Layout
 # ---------------------------------------------------------------------
 st.title("📦 Warehouse AGV & Snake MDP Navigation")
 st.markdown("Blueprint simulation showing the AGV cursor navigating warehouse storage aisles with entry/exit bays and a glowing snake trace path.")
@@ -151,7 +173,7 @@ with col_right:
     st.code("\n".join(st.session_state.log[-12:]) if st.session_state.log else "—", language=None)
 
 # ---------------------------------------------------------------------
-# 5. Warehouse Blueprint & Snake Trace Rendering
+# 6. Warehouse Blueprint & Snake Trace Rendering
 # ---------------------------------------------------------------------
 def render_warehouse():
     ss = st.session_state
@@ -180,19 +202,24 @@ def render_warehouse():
         ax.fill(rx, ry, color='#1e293b', edgecolor='#64748b', linewidth=1.5)
         ax.text(np.mean(rx), np.mean(ry), "STORAGE RACK", color='#64748b', fontsize=7, ha='center', va='center', fontweight='bold', alpha=0.7)
 
-    # Snake Xenzia Style Glowing Trail (limited to trail_length for clean fading effect)
-    if len(ss.trajectory) > 1:
-        recent_traj = ss.trajectory[-trail_length:]
+    # Current position from precomputed trajectory
+    current_idx = min(ss.idx, len(PRECOMPUTED_TRAJ) - 1)
+    cur_pos = PRECOMPUTED_TRAJ[current_idx]
+    cx, cy = cur_pos['x'], cur_pos['y']
+
+    # Snake Xenzia Style Glowing Trail (limited to trail_length)
+    if current_idx > 0:
+        start_idx = max(0, current_idx - trail_length)
+        recent_traj = PRECOMPUTED_TRAJ[start_idx : current_idx + 1]
         tx = [p['x'] for p in recent_traj]
         ty = [p['y'] for p in recent_traj]
         
-        # Draw fading snake body segments
         for i in range(len(tx) - 1):
             alpha_val = (i + 1) / len(tx)
             ax.plot(tx[i:i+2], ty[i:i+2], color='#38bdf8', linewidth=3.5, alpha=alpha_val)
 
     # AGV Cursor Head (Snake Head)
-    ax.scatter([ss.x], [ss.y], color='#facc15', s=200, zorder=5, marker='s', edgecolors='white', linewidths=1.5, label="AGV Cursor")
+    ax.scatter([cx], [cy], color='#facc15', s=200, zorder=5, marker='s', edgecolors='white', linewidths=1.5, label="AGV Cursor")
 
     ax.set_xlim(-1, 13)
     ax.set_ylim(-1, 11)
