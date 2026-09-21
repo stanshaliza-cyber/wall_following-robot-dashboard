@@ -1,6 +1,6 @@
 """
-Streamlit Dashboard: Warehouse AGV MDP Navigation (Accurate Circuit Path)
-========================================================================
+Streamlit Dashboard: Warehouse AGV MDP Navigation (Full Trace & Dynamic Gates)
+=============================================================================
 Run with:
     streamlit run wall_following_streamlit.py
 """
@@ -38,19 +38,17 @@ R = {
 }
 
 # ---------------------------------------------------------------------
-# 2. Pre-compute Exact Rectangular Room Trajectory from Dataset Actions
+# 2. Pre-compute Exact Trajectory & Dynamic Gate Coordinates
 # ---------------------------------------------------------------------
 def precompute_trajectory(actions):
     """
-    Generates a closed 4-lap rectangular circuit matching the SCITOS-G5 
-    wall-following dataset specifications.
+    Generates the full rectangular circuit matching the dataset path.
     """
     traj = []
-    # Room dimensions
     x_min, x_max = 1.0, 11.0
     y_min, y_max = 1.0, 9.0
     
-    # Start at top-left corridor heading East
+    # Start at entry point
     x, y = 2.0, 9.0
     heading = 0  # 0: East, 1: South, 2: West, 3: North
     
@@ -72,7 +70,6 @@ def precompute_trajectory(actions):
         x += dx_list[heading] * step
         y += dy_list[heading] * step
         
-        # Clamp within warehouse walls to maintain clean circuit
         x = np.clip(x, x_min, x_max)
         y = np.clip(y, y_min, y_max)
         
@@ -81,6 +78,10 @@ def precompute_trajectory(actions):
 
 PRECOMPUTED_TRAJ = precompute_trajectory(DATA['Class'].values)
 
+# Entry and Exit Coordinates from Trajectory
+ENTRY_POS = PRECOMPUTED_TRAJ[0]
+EXIT_POS = PRECOMPUTED_TRAJ[-1]
+
 # ---------------------------------------------------------------------
 # 3. Sidebar Controls
 # ---------------------------------------------------------------------
@@ -88,7 +89,6 @@ st.sidebar.header("🏭 Warehouse Settings")
 too_close_thresh = st.sidebar.slider("Too-Close Threshold (m)", 0.3, 0.6, 0.53, 0.01)
 too_far_thresh = st.sidebar.slider("Too-Far Threshold (m)", 0.6, 1.2, 0.71, 0.01)
 max_steps = st.sidebar.slider("Simulation Steps", 500, len(DATA), 2000, 100)
-trail_length = st.sidebar.slider("Snake Trail Length", 20, 300, 100, 10)
 
 def classify_state(sd_left):
     if sd_left < too_close_thresh:
@@ -139,8 +139,8 @@ def step_simulation():
 # ---------------------------------------------------------------------
 # 5. Streamlit Dashboard Layout
 # ---------------------------------------------------------------------
-st.title("📦 Warehouse AGV & Snake MDP Navigation")
-st.markdown("Blueprint simulation showing the AGV cursor navigating warehouse storage aisles with entry/exit bays and a glowing snake trace path.")
+st.title("📦 Warehouse AGV MDP Navigation (Full Path Trace)")
+st.markdown("Blueprint simulation showing the AGV cursor starting at the **Entry Gate**, tracing its **entire traveled path**, and terminating at the **Exit Gate**.")
 
 col_left, col_right = st.columns([2.3, 1.0])
 
@@ -172,13 +172,12 @@ with col_right:
     st.code("\n".join(st.session_state.log[-12:]) if st.session_state.log else "—", language=None)
 
 # ---------------------------------------------------------------------
-# 6. Warehouse Blueprint & Snake Trace Rendering
+# 6. Warehouse Blueprint & Full Trace Rendering
 # ---------------------------------------------------------------------
 def render_warehouse():
     ss = st.session_state
     fig, ax = plt.subplots(figsize=(7, 5.8))
     
-    # Architectural Blueprint Dark Theme
     fig.patch.set_facecolor('#0b0f19')
     ax.set_facecolor('#0b0f19')
     ax.set_aspect('equal')
@@ -186,11 +185,11 @@ def render_warehouse():
     # Warehouse Outer Walls
     ax.plot([0, 12, 12, 0, 0], [0, 0, 10, 10, 0], color='#38bdf8', linewidth=3.5, label="Warehouse Walls")
 
-    # Entry and Exit Gates
-    ax.plot([0, 0], [2, 4], color='#22c55e', linewidth=6, label="Entry Gate")
-    ax.plot([12, 12], [6, 8], color='#ef4444', linewidth=6, label="Exit Gate")
+    # Dynamic Entry and Exit Gates based on path start and end
+    ax.scatter([ENTRY_POS['x']], [ENTRY_POS['y']], color='#22c55e', s=250, zorder=6, marker='o', edgecodes='white', linewidths=2, label="Entry Gate")
+    ax.scatter([EXIT_POS['x']], [EXIT_POS['y']], color='#ef4444', s=250, zorder=6, marker='X', edgecodes='white', linewidths=2, label="Exit Gate")
 
-    # Internal Fulfillment Storage Racks (Obstacles)
+    # Internal Fulfillment Storage Racks
     racks = [
         ([2.5, 5.0, 5.0, 2.5, 2.5], [2.0, 2.0, 4.5, 4.5, 2.0]),
         ([7.0, 9.5, 9.5, 7.0, 7.0], [2.0, 2.0, 4.5, 4.5, 2.0]),
@@ -201,27 +200,24 @@ def render_warehouse():
         ax.fill(rx, ry, color='#1e293b', edgecolor='#64748b', linewidth=1.5)
         ax.text(np.mean(rx), np.mean(ry), "STORAGE RACK", color='#64748b', fontsize=7, ha='center', va='center', fontweight='bold', alpha=0.7)
 
-    # Current position from precomputed trajectory
+    # Current position
     current_idx = min(ss.idx, len(PRECOMPUTED_TRAJ) - 1)
     cur_pos = PRECOMPUTED_TRAJ[current_idx]
     cx, cy = cur_pos['x'], cur_pos['y']
 
-    # Snake Xenzia Style Glowing Trail (limited to trail_length)
+    # FULL TRAJECTORY TRACE (No length limit, shows entire path travelled so far)
     if current_idx > 0:
-        start_idx = max(0, current_idx - trail_length)
-        recent_traj = PRECOMPUTED_TRAJ[start_idx : current_idx + 1]
-        tx = [p['x'] for p in recent_traj]
-        ty = [p['y'] for p in recent_traj]
-        
-        for i in range(len(tx) - 1):
-            alpha_val = (i + 1) / len(tx)
-            ax.plot(tx[i:i+2], ty[i:i+2], color='#38bdf8', linewidth=3.5, alpha=alpha_val)
+        full_traj = PRECOMPUTED_TRAJ[: current_idx + 1]
+        tx = [p['x'] for p in full_traj]
+        ty = [p['y'] for p in full_traj]
+        ax.plot(tx, ty, color='#38bdf8', linewidth=2.5, alpha=0.85, label="Travelled Path Trace")
 
-    # AGV Cursor Head (Snake Head)
-    ax.scatter([cx], [cy], color='#facc15', s=200, zorder=5, marker='s', edgecolors='white', linewidths=1.5, label="AGV Cursor")
+    # AGV Cursor Head
+    ax.scatter([cx], [cy], color='#facc15', s=200, zorder=7, marker='s', edgecolors='white', linewidths=1.5, label="AGV Cursor")
 
     ax.set_xlim(-1, 13)
     ax.set_ylim(-1, 11)
+    ax.legend(loc='upper right', framealpha=0.8, fontsize=7, facecolor='#1e293b', edgecolor='none', labelcolor='white')
     ax.axis('off')
     
     plot_placeholder.pyplot(fig, use_container_width=True)
