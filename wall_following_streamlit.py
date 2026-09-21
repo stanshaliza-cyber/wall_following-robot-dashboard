@@ -18,6 +18,25 @@ Changes vs. the previous version
 3. The arena is sized to the trajectory's real bounding box (with padding),
    instead of a fixed 12x10 box. The previous fixed box clipped ~17% of steps
    against its walls, which distorted the shape of the corridor.
+
+Section 6 (added)
+------------------
+Below the original live-playback dashboard, a second section compares four
+extra ways of deriving a policy over the same 3-state x 4-action problem,
+rendered on the SAME warehouse layout (same walls/racks, same entry/exit) so
+the resulting paths are directly comparable:
+
+    - Approximate Dynamic Programming (approximate policy iteration over an
+      empirically-estimated transition model P(s'|s))
+    - Monte Carlo control (first-visit, epsilon-greedy, sampled episodes)
+    - Local search (hill-climbing with random restarts over the policy table)
+    - Hooke-Jeeves pattern search (exploratory + pattern moves over an
+      integer action-index encoding of the policy)
+
+Nothing in Sections 1-5 below was modified -- Section 6 only reads the
+objects they already define (DATA, POLICY, R, classify_state, BOUNDS,
+RACK_CELLS, RACK_CELL_SIZE, ENTRY_POS, EXIT_POS, ENTRY_WALL, EXIT_WALL,
+draw_wall_with_gap).
 """
 
 import time
@@ -336,3 +355,324 @@ if st.session_state.running and not st.session_state.finished:
         render_warehouse()
         time.sleep(sim_speed)
     st.rerun()
+
+# =======================================================================
+# 6. NEW: Comparing alternative policy-search methods (same layout)
+# =======================================================================
+# Everything below is additive. It reuses R, classify_state, DATA, BOUNDS,
+# RACK_CELLS, RACK_CELL_SIZE, ENTRY_POS/EXIT_POS, ENTRY_WALL/EXIT_WALL and
+# draw_wall_with_gap from the sections above without modifying any of them.
+#
+# Framing: the "policy" in this problem is just a lookup table with three
+# entries (one action per state), and there are only 4**3 = 64 possible
+# deterministic policies. That's small enough to treat literally as a
+# policy-search problem -- each method below searches (exactly, empirically,
+# or heuristically) over that table, using the same reward matrix R.
+#
+# Honesty note shown in the UI too: in this dataset the *next* state depends
+# only on the next sensor reading, not on the action taken, so the total
+# reward of a policy is separable per state and value iteration already
+# finds the global optimum (that's the "Optimal_Action" column you loaded).
+# Approximate DP will therefore tend to rediscover the same optimum; Monte
+# Carlo and the two heuristic search methods are deliberately kept
+# sample/iteration-limited so their tabs show real, sometimes-imperfect
+# approximation behavior instead of trivially matching it.
+
+STATES = ['Too-Close', 'Ideal', 'Too-Far']
+ACTIONS = ['Move-Forward', 'Slight-Right-Turn', 'Sharp-Right-Turn', 'Slight-Left-Turn']
+
+
+@st.cache_data
+def build_state_sequence():
+    return [classify_state(v) for v in DATA['SD_left'].values]
+
+
+@st.cache_data
+def build_state_stats():
+    seq = build_state_sequence()
+    counts = {s: 0 for s in STATES}
+    trans = {s: {s2: 0 for s2 in STATES} for s in STATES}
+    for i, s in enumerate(seq):
+        counts[s] += 1
+        if i + 1 < len(seq):
+            trans[s][seq[i + 1]] += 1
+    P = {}
+    for s in STATES:
+        total = sum(trans[s].values())
+        if total == 0:
+            P[s] = {s2: 1.0 / len(STATES) for s2 in STATES}
+        else:
+            P[s] = {s2: trans[s][s2] / total for s2 in STATES}
+    return counts, P
+
+
+STATE_SEQ = build_state_sequence()
+STATE_COUNTS, TRANSITION_P = build_state_stats()
+
+
+def policy_fitness(policy):
+    """Exact total reward a policy earns over the whole recorded run.
+    (Exact, not simulated with noise, because state transitions here don't
+    depend on the action taken -- see the honesty note above.)"""
+    return sum(STATE_COUNTS[s] * R[s][policy.get(s, 'Move-Forward')] for s in STATES)
+
+
+def simulate_positions(policy):
+    """Same step rule as precompute_run's inner loop, but for an arbitrary
+    policy and without touching that cached function or its bounds -- we
+    deliberately plot every method inside the SAME BOUNDS/RACK_CELLS so the
+    room layout is identical across tabs."""
+    dx_list = [1.0, 0.0, -1.0, 0.0]
+    dy_list = [0.0, -1.0, 0.0, 1.0]
+    x, y, heading = 0.0, 0.0, 0
+    xs, ys, cum_rewards = [], [], []
+    cum = 0.0
+    for state in STATE_SEQ:
+        action = policy.get(state, 'Move-Forward')
+        if action not in R[state]:
+            action = 'Move-Forward'
+        if action == 'Sharp-Right-Turn':
+            heading = (heading + 1) % 4
+            step = 0.03
+        elif action == 'Slight-Right-Turn':
+            step = 0.04
+        elif action == 'Slight-Left-Turn':
+            heading = (heading - 1) % 4
+            step = 0.03
+        else:
+            step = 0.05
+        x += dx_list[heading] * step
+        y += dy_list[heading] * step
+        cum += R[state][action]
+        xs.append(x)
+        ys.append(y)
+        cum_rewards.append(cum)
+    return np.array(xs), np.array(ys), cum_rewards
+
+
+# --- 6a. Approximate Dynamic Programming (approximate policy iteration) ---
+def run_approx_dp(gamma=0.9, iterations=15, eval_sweeps=5, seed=0):
+    rng = np.random.default_rng(seed)
+    policy = {s: rng.choice(ACTIONS) for s in STATES}
+    V = {s: 0.0 for s in STATES}
+    history = [policy_fitness(policy)]
+    for _ in range(iterations):
+        # Approximate policy evaluation: a handful of bootstrapped Bellman
+        # sweeps against the EMPIRICALLY ESTIMATED transition model, rather
+        # than solving the linear system exactly -- this is the
+        # "approximate" part of approximate policy iteration.
+        for _ in range(eval_sweeps):
+            V = {s: R[s][policy[s]] + gamma * sum(TRANSITION_P[s][s2] * V[s2] for s2 in STATES)
+                 for s in STATES}
+        # Policy improvement
+        stable = True
+        new_policy = {}
+        for s in STATES:
+            q = {a: R[s][a] + gamma * sum(TRANSITION_P[s][s2] * V[s2] for s2 in STATES) for a in ACTIONS}
+            best_a = max(q, key=q.get)
+            if best_a != policy[s]:
+                stable = False
+            new_policy[s] = best_a
+        policy = new_policy
+        history.append(policy_fitness(policy))
+        if stable:
+            break
+    return policy, history
+
+
+# --- 6b. Monte Carlo control (first-visit, epsilon-greedy) ---
+def run_monte_carlo(episodes=200, episode_len=10, gamma=0.3, epsilon_start=0.5, seed=1):
+    rng = np.random.default_rng(seed)
+    Q = {s: {a: 0.0 for a in ACTIONS} for s in STATES}
+    N = {s: {a: 0 for a in ACTIONS} for s in STATES}
+    n = len(STATE_SEQ)
+    history = []
+    for ep in range(episodes):
+        epsilon = max(0.05, epsilon_start * (1 - ep / episodes))
+        start = int(rng.integers(0, max(1, n - episode_len)))
+        seq = STATE_SEQ[start:start + episode_len]
+
+        trajectory = []
+        for s in seq:
+            if rng.random() < epsilon:
+                a = rng.choice(ACTIONS)
+            else:
+                a = max(Q[s], key=Q[s].get)
+            trajectory.append((s, a, R[s][a]))
+
+        # First-visit Monte Carlo return, backed up from the end of episode
+        G = 0.0
+        visited = set()
+        for t in reversed(range(len(trajectory))):
+            s, a, r = trajectory[t]
+            G = r + gamma * G
+            if (s, a) not in visited:
+                visited.add((s, a))
+                N[s][a] += 1
+                Q[s][a] += (G - Q[s][a]) / N[s][a]
+
+        greedy_policy = {s: max(Q[s], key=Q[s].get) for s in STATES}
+        history.append(policy_fitness(greedy_policy))
+
+    policy = {s: max(Q[s], key=Q[s].get) for s in STATES}
+    return policy, history
+
+
+# --- 6c. Local search / hill-climbing over the policy table ---
+def run_local_search(iterations=25, restart_prob=0.10, seed=2):
+    rng = np.random.default_rng(seed)
+    current = {s: rng.choice(ACTIONS) for s in STATES}
+    current_fit = policy_fitness(current)
+    best, best_fit = dict(current), current_fit
+    history = [best_fit]
+    for _ in range(iterations):
+        neighbor = dict(current)
+        s = rng.choice(STATES)
+        neighbor[s] = rng.choice(ACTIONS)
+        neighbor_fit = policy_fitness(neighbor)
+        if neighbor_fit >= current_fit or rng.random() < restart_prob:
+            current, current_fit = neighbor, neighbor_fit
+        if current_fit > best_fit:
+            best, best_fit = dict(current), current_fit
+        history.append(best_fit)
+    return best, history
+
+
+# --- 6d. Hooke-Jeeves pattern search (integer action-index encoding) ---
+def run_hooke_jeeves(step_init=2, seed=3):
+    rng = np.random.default_rng(seed)
+    idx = {s: int(rng.integers(0, len(ACTIONS))) for s in STATES}
+
+    def to_policy(vec):
+        return {s: ACTIONS[max(0, min(len(ACTIONS) - 1, int(round(vec[s]))))] for s in STATES}
+
+    def f(vec):
+        return policy_fitness(to_policy(vec))
+
+    def explore(base, step):
+        point = dict(base)
+        improved = False
+        for s in STATES:
+            best_val = f(point)
+            best_point = point
+            for delta in (step, -step):
+                trial = dict(point)
+                trial[s] = max(0, min(len(ACTIONS) - 1, point[s] + delta))
+                if f(trial) > best_val:
+                    best_val = f(trial)
+                    best_point = trial
+                    improved = True
+            point = best_point
+        return point, improved
+
+    base = idx
+    step = step_init
+    history = [f(base)]
+    while step >= 1:
+        trial, improved = explore(base, step)
+        if improved:
+            # Pattern move: push further along the direction that just worked
+            pattern = {s: max(0, min(len(ACTIONS) - 1, base[s] + 2 * (trial[s] - base[s]))) for s in STATES}
+            pattern_explored, _ = explore(pattern, step)
+            base = pattern_explored if f(pattern_explored) > f(trial) else trial
+            history.append(f(base))
+        else:
+            step = step // 2  # shrink the step and search more finely
+    return to_policy(base), history
+
+
+def plot_policy_path(title, xs, ys, color):
+    """Static path-on-layout plot for one method's tab. Uses the SAME
+    BOUNDS / RACK_CELLS / entry / exit as the live dashboard above, so the
+    room itself never changes between tabs -- only the path does."""
+    x_min, x_max, y_min, y_max = BOUNDS
+    fig, ax = plt.subplots(figsize=(6, 5.2))
+    fig.patch.set_facecolor('#0b0f19')
+    ax.set_facecolor('#0b0f19')
+    ax.set_aspect('equal')
+
+    for rx, ry in RACK_CELLS:
+        ax.add_patch(Rectangle((rx, ry), RACK_CELL_SIZE, RACK_CELL_SIZE,
+                                facecolor='#1e293b', edgecolor='#334155',
+                                linewidth=0.4, zorder=2))
+
+    draw_wall_with_gap(ax, BOUNDS, ENTRY_WALL, gap_width=1.0, color='#38bdf8')
+    draw_wall_with_gap(ax, BOUNDS, EXIT_WALL, gap_width=1.0, color='#38bdf8')
+
+    ax.scatter([ENTRY_POS[0]], [ENTRY_POS[1]], color='#22c55e', s=140, zorder=7,
+               marker='o', edgecolors='white', linewidths=1.2)
+    ax.scatter([EXIT_POS[0]], [EXIT_POS[1]], color='#ef4444', s=140, zorder=7,
+               marker='X', edgecolors='white', linewidths=1.2)
+
+    ax.plot(xs, ys, color=color, linewidth=2.2, alpha=0.9, zorder=6)
+    ax.scatter([xs[-1]], [ys[-1]], color='#facc15', s=150, zorder=8,
+               marker='s', edgecolors='white', linewidths=1.2)
+
+    ax.set_xlim(x_min - 0.5, x_max + 0.5)
+    ax.set_ylim(y_min - 0.5, y_max + 0.5)
+    ax.set_title(title, color='white', fontsize=11)
+    ax.axis('off')
+    return fig
+
+
+st.markdown("---")
+st.header("🔬 Comparing Policy-Search Methods (Same Warehouse Layout)")
+st.markdown(
+    "Same room, same walls, same storage racks, same reward matrix `R` -- only "
+    "*how the policy was found* changes between tabs. Because the next state "
+    "in this dataset depends on the next sensor reading rather than on the "
+    "action taken, the exact methods (value iteration, approximate DP) tend "
+    "to converge on the same optimum already used above; Monte Carlo and the "
+    "two heuristic searches are kept sample/iteration-limited so you can see "
+    "them approach -- and sometimes miss -- that optimum."
+)
+
+with st.spinner("Running policy-search methods..."):
+    adp_policy, adp_hist = run_approx_dp()
+    mc_policy, mc_hist = run_monte_carlo()
+    ls_policy, ls_hist = run_local_search()
+    hj_policy, hj_hist = run_hooke_jeeves()
+
+METHODS = {
+    "Value Iteration (baseline)": {"policy": POLICY, "history": None, "color": "#38bdf8",
+                                    "note": "Loaded directly from optimal_value_function.csv -- exact solution."},
+    "Approximate DP": {"policy": adp_policy, "history": adp_hist, "color": "#a855f7",
+                        "note": "Approximate policy iteration over an empirically estimated P(s'|s)."},
+    "Monte Carlo": {"policy": mc_policy, "history": mc_hist, "color": "#f97316",
+                     "note": "First-visit MC control, epsilon-greedy, 200 short sampled episodes. "
+                             "Watch the fitness chart -- it starts noisy and settles as Q(s,a) converges."},
+    "Local Search": {"policy": ls_policy, "history": ls_hist, "color": "#22c55e",
+                      "note": "Hill-climbing over the policy table with random restarts."},
+    "Hooke-Jeeves": {"policy": hj_policy, "history": hj_hist, "color": "#eab308",
+                      "note": "Pattern search over an integer action-index encoding of the policy."},
+}
+
+tabs = st.tabs(list(METHODS.keys()))
+summary = []
+
+for tab, name in zip(tabs, METHODS.keys()):
+    info = METHODS[name]
+    policy = info["policy"]
+    xs_m, ys_m, cum_rewards_m = simulate_positions(policy)
+    total_reward = cum_rewards_m[-1]
+    summary.append({"Method": name, "Total Reward": total_reward})
+
+    with tab:
+        c1, c2 = st.columns([2.0, 1.2])
+        with c1:
+            fig = plot_policy_path(name, xs_m, ys_m, info["color"])
+            st.pyplot(fig, use_container_width=True)
+            plt.close(fig)
+        with c2:
+            st.caption(info["note"])
+            st.metric("Total Reward (full run)", f"{total_reward:.0f}")
+            st.table(pd.DataFrame(
+                [{"State": s, "Action": policy.get(s, "Move-Forward")} for s in STATES]
+            ).set_index("State"))
+            if info["history"] is not None:
+                st.caption("Fitness over the course of the search")
+                st.line_chart(pd.DataFrame({"Total Reward": info["history"]}))
+
+st.subheader("📊 Total Reward by Method")
+summary_df = pd.DataFrame(summary).set_index("Method")
+st.bar_chart(summary_df)
