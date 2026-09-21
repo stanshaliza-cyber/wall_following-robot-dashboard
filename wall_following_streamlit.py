@@ -40,7 +40,6 @@ R = {
 # ---------------------------------------------------------------------
 # 2. Pre-compute Exact Rectangular Room Trajectory from Dataset Actions
 # ---------------------------------------------------------------------
-@st.cache_data
 def precompute_trajectory(actions):
     """
     Generates a closed 4-lap rectangular circuit matching the SCITOS-G5 
