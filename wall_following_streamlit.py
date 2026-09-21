@@ -1,12 +1,11 @@
 """
-Streamlit Dashboard: Warehouse AGV MDP Navigation (Full Trace & Dynamic Gates)
-=============================================================================
+Streamlit Dashboard: Warehouse AGV MDP Navigation (Pre-drawn Path & Clean Layout)
+=================================================================================
 Run with:
     streamlit run wall_following_streamlit.py
 """
 
 import time
-import math
 import numpy as np
 import matplotlib.pyplot as plt
 import pandas as pd
@@ -78,28 +77,12 @@ def precompute_trajectory(actions):
 
 PRECOMPUTED_TRAJ = precompute_trajectory(DATA['Class'].values)
 
-# Entry and Exit Coordinates from Trajectory
 ENTRY_POS = PRECOMPUTED_TRAJ[0]
 EXIT_POS = PRECOMPUTED_TRAJ[-1]
+max_steps = len(DATA)
 
 # ---------------------------------------------------------------------
-# 3. Sidebar Controls
-# ---------------------------------------------------------------------
-st.sidebar.header("🏭 Warehouse Settings")
-too_close_thresh = st.sidebar.slider("Too-Close Threshold (m)", 0.3, 0.6, 0.53, 0.01)
-too_far_thresh = st.sidebar.slider("Too-Far Threshold (m)", 0.6, 1.2, 0.71, 0.01)
-max_steps = st.sidebar.slider("Simulation Steps", 500, len(DATA), 2000, 100)
-
-def classify_state(sd_left):
-    if sd_left < too_close_thresh:
-        return 'Too-Close'
-    elif sd_left > too_far_thresh:
-        return 'Too-Far'
-    else:
-        return 'Ideal'
-
-# ---------------------------------------------------------------------
-# 4. Session State Initialization
+# 3. Session State Initialization
 # ---------------------------------------------------------------------
 def reset_sim():
     st.session_state.idx = 0
@@ -122,7 +105,14 @@ def step_simulation():
     sd_left = row['SD_left']
     dataset_action = row['Class']
 
-    state = classify_state(sd_left)
+    # Optimal classification thresholds hardcoded
+    if sd_left < 0.53:
+        state = 'Too-Close'
+    elif sd_left > 0.71:
+        state = 'Too-Far'
+    else:
+        state = 'Ideal'
+
     action = POLICY.get(state, dataset_action)
     if action not in R[state]:
         action = 'Move-Forward'
@@ -137,12 +127,12 @@ def step_simulation():
     ss.idx += 1
 
 # ---------------------------------------------------------------------
-# 5. Streamlit Dashboard Layout
+# 4. Streamlit Dashboard Layout (Larger Motion Window & Compact Legend)
 # ---------------------------------------------------------------------
-st.title("📦 Warehouse AGV MDP Navigation (Full Path Trace)")
-st.markdown("Blueprint simulation showing the AGV cursor starting at the **Entry Gate**, tracing its **entire traveled path**, and terminating at the **Exit Gate**.")
+st.title("📦 Warehouse AGV MDP Optimal Navigation")
+st.markdown("AGV cursor tracing the **pre-drawn optimal dataset path** from the Entry Gate around storage racks to the Exit Gate.")
 
-col_left, col_right = st.columns([2.3, 1.0])
+col_left, col_right = st.columns([3.0, 1.0])
 
 with col_left:
     btn1, btn2, btn3, btn4 = st.columns([1, 1, 1, 2])
@@ -152,7 +142,7 @@ with col_left:
         step_simulation()
     if btn3.button("↺ Reset"):
         reset_sim()
-    sim_speed = btn4.slider("Playback Speed", 0.01, 0.2, 0.03, 0.01)
+    sim_speed = btn4.slider("Playback Speed", 0.01, 0.2, 0.02, 0.01)
     
     plot_placeholder = st.empty()
 
@@ -163,33 +153,34 @@ with col_right:
     m2.metric("Reward", st.session_state.cum_reward)
 
     current_row = DATA.iloc[min(st.session_state.idx, len(DATA)-1)]
-    cur_state = classify_state(current_row['SD_left'])
+    cur_state = 'Too-Close' if current_row['SD_left'] < 0.53 else ('Too-Far' if current_row['SD_left'] > 0.71 else 'Ideal')
     st.info(f"**Current State:** `{cur_state}`\n\n"
             f"• Left Distance: `{current_row['SD_left']:.2f}m`\n"
             f"• Front Distance: `{current_row['SD_front']:.2f}m`")
 
     st.subheader("📜 Event Log")
-    st.code("\n".join(st.session_state.log[-12:]) if st.session_state.log else "—", language=None)
+    st.code("\n".join(st.session_state.log[-10:]) if st.session_state.log else "—", language=None)
 
 # ---------------------------------------------------------------------
-# 6. Warehouse Blueprint & Full Trace Rendering
+# 5. Warehouse Blueprint & Pre-drawn Path Rendering
 # ---------------------------------------------------------------------
 def render_warehouse():
     ss = st.session_state
-    fig, ax = plt.subplots(figsize=(7, 5.8))
+    # Increased plot size for a larger motion window
+    fig, ax = plt.subplots(figsize=(9, 7.5))
     
     fig.patch.set_facecolor('#0b0f19')
     ax.set_facecolor('#0b0f19')
     ax.set_aspect('equal')
 
     # Warehouse Outer Walls
-    ax.plot([0, 12, 12, 0, 0], [0, 0, 10, 10, 0], color='#38bdf8', linewidth=3.5, label="Warehouse Walls")
+    ax.plot([0, 12, 12, 0, 0], [0, 0, 10, 10, 0], color='#38bdf8', linewidth=3.5, label="Walls")
 
-    # Dynamic Entry and Exit Gates based on path start and end (Fixed edgecolors spelling)
-    ax.scatter([ENTRY_POS['x']], [ENTRY_POS['y']], color='#22c55e', s=250, zorder=6, marker='o', edgecolors='white', linewidths=2, label="Entry Gate")
-    ax.scatter([EXIT_POS['x']], [EXIT_POS['y']], color='#ef4444', s=250, zorder=6, marker='X', edgecolors='white', linewidths=2, label="Exit Gate")
+    # Entry and Exit Gates
+    ax.scatter([ENTRY_POS['x']], [ENTRY_POS['y']], color='#22c55e', s=200, zorder=6, marker='o', edgecolors='white', linewidths=1.5, label="Entry")
+    ax.scatter([EXIT_POS['x']], [EXIT_POS['y']], color='#ef4444', s=200, zorder=6, marker='X', edgecolors='white', linewidths=1.5, label="Exit")
 
-    # Internal Fulfillment Storage Racks
+    # Internal Fulfillment Storage Racks (Obstacles)
     racks = [
         ([2.5, 5.0, 5.0, 2.5, 2.5], [2.0, 2.0, 4.5, 4.5, 2.0]),
         ([7.0, 9.5, 9.5, 7.0, 7.0], [2.0, 2.0, 4.5, 4.5, 2.0]),
@@ -197,27 +188,31 @@ def render_warehouse():
         ([7.0, 9.5, 9.5, 7.0, 7.0], [5.5, 5.5, 8.0, 8.0, 5.5]),
     ]
     for rx, ry in racks:
-        ax.fill(rx, ry, color='#1e293b', edgecolor='#64748b', linewidth=1.5)
-        ax.text(np.mean(rx), np.mean(ry), "STORAGE RACK", color='#64748b', fontsize=7, ha='center', va='center', fontweight='bold', alpha=0.7)
+        ax.fill(rx, ry, color='#1e293b', edgecolor='#64748b', linewidth=1.5, zorder=2)
+        ax.text(np.mean(rx), np.mean(ry), "RACK", color='#64748b', fontsize=7, ha='center', va='center', fontweight='bold', alpha=0.7, zorder=3)
 
-    # Current position
+    # 1. PRE-DRAWN FULL PATH (Entire path visible in background)
+    all_tx = [p['x'] for p in PRECOMPUTED_TRAJ]
+    all_ty = [p['y'] for p in PRECOMPUTED_TRAJ]
+    ax.plot(all_tx, all_ty, color='#1e3a8a', linewidth=2.0, linestyle='--', label="Full Path", zorder=4)
+
+    # 2. TRAVELLED PATH TRACE (Bright trace showing progress up to current step)
     current_idx = min(ss.idx, len(PRECOMPUTED_TRAJ) - 1)
-    cur_pos = PRECOMPUTED_TRAJ[current_idx]
-    cx, cy = cur_pos['x'], cur_pos['y']
-
-    # FULL TRAJECTORY TRACE
     if current_idx > 0:
-        full_traj = PRECOMPUTED_TRAJ[: current_idx + 1]
-        tx = [p['x'] for p in full_traj]
-        ty = [p['y'] for p in full_traj]
-        ax.plot(tx, ty, color='#38bdf8', linewidth=2.5, alpha=0.85, label="Travelled Path Trace")
+        travelled_traj = PRECOMPUTED_TRAJ[: current_idx + 1]
+        ttx = [p['x'] for p in travelled_traj]
+        tty = [p['y'] for p in travelled_traj]
+        ax.plot(ttx, tty, color='#38bdf8', linewidth=3.0, alpha=0.9, label="Traveled", zorder=5)
 
-    # AGV Cursor Head (Fixed edgecolors spelling)
-    ax.scatter([cx], [cy], color='#facc15', s=200, zorder=7, marker='s', edgecolors='white', linewidths=1.5, label="AGV Cursor")
+    # 3. AGV Cursor Head
+    cur_pos = PRECOMPUTED_TRAJ[current_idx]
+    ax.scatter([cur_pos['x']], [cur_pos['y']], color='#facc15', s=220, zorder=7, marker='s', edgecolors='white', linewidths=1.5, label="AGV")
 
     ax.set_xlim(-1, 13)
     ax.set_ylim(-1, 11)
-    ax.legend(loc='upper right', framealpha=0.8, fontsize=7, facecolor='#1e293b', edgecolor='none', labelcolor='white')
+    
+    # Compact Legend placed cleanly in the corner
+    ax.legend(loc='upper right', framealpha=0.6, fontsize=6.5, facecolor='#1e293b', edgecolor='none', labelcolor='white', ncol=2)
     ax.axis('off')
     
     plot_placeholder.pyplot(fig, use_container_width=True)
