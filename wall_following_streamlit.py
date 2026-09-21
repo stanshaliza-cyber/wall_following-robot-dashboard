@@ -1,6 +1,6 @@
 """
-Streamlit Dashboard: MDP Wall-Following Robot Navigation (Maze Style)
-=====================================================================
+Streamlit Dashboard: Warehouse AGV / Snake-Style MDP Navigation
+==============================================================
 Run with:
     streamlit run wall_following_streamlit.py
 """
@@ -12,7 +12,7 @@ import matplotlib.pyplot as plt
 import pandas as pd
 import streamlit as st
 
-st.set_page_config(page_title="MDP Robot Maze Navigation", layout="wide")
+st.set_page_config(page_title="Warehouse AGV MDP Navigation", layout="wide")
 
 # ---------------------------------------------------------------------
 # 1. Load Dataset & MDP Policies
@@ -40,10 +40,11 @@ R = {
 # ---------------------------------------------------------------------
 # 2. Sidebar Controls
 # ---------------------------------------------------------------------
-st.sidebar.header("⚙️ Simulation Settings")
+st.sidebar.header("🏭 Warehouse Settings")
 too_close_thresh = st.sidebar.slider("Too-Close Threshold (m)", 0.3, 0.6, 0.53, 0.01)
 too_far_thresh = st.sidebar.slider("Too-Far Threshold (m)", 0.6, 1.2, 0.71, 0.01)
-max_steps = st.sidebar.slider("Dataset Steps to Simulate", 500, len(DATA), 2000, 100)
+max_steps = st.sidebar.slider("Simulation Steps", 500, len(DATA), 2000, 100)
+trail_length = st.sidebar.slider("Snake Trail Length", 20, 300, 100, 10)
 
 def classify_state(sd_left):
     if sd_left < too_close_thresh:
@@ -58,12 +59,11 @@ def classify_state(sd_left):
 # ---------------------------------------------------------------------
 def reset_sim():
     st.session_state.idx = 0
-    st.session_state.x = 2.0
-    st.session_state.y = 8.0
+    st.session_state.x = 1.5
+    st.session_state.y = 8.5
     st.session_state.heading_idx = 0  # 0: East, 1: South, 2: West, 3: North
     st.session_state.cum_reward = 0
-    st.session_state.trajectory = [{'x': 2.0, 'y': 8.0}]
-    st.session_state.wall_points = []
+    st.session_state.trajectory = [{'x': 1.5, 'y': 8.5}]
     st.session_state.log = []
     st.session_state.running = False
     st.session_state.finished = False
@@ -109,12 +109,6 @@ def step_simulation():
 
     ss.trajectory.append({'x': ss.x, 'y': ss.y})
 
-    left_dir_idx = (ss.heading_idx - 1) % 4
-    wx_dir, wy_dir = DIRECTIONS[left_dir_idx]
-    wall_x = ss.x + wx_dir * sd_left
-    wall_y = ss.y + wy_dir * sd_left
-    ss.wall_points.append({'x': wall_x, 'y': wall_y})
-
     ss.log.append(f"Step {ss.idx:04d} | State: {state:<10s} | Action: {action:<18s}")
     if len(ss.log) > 100:
         ss.log.pop(0)
@@ -124,10 +118,10 @@ def step_simulation():
 # ---------------------------------------------------------------------
 # 4. Streamlit Dashboard Layout
 # ---------------------------------------------------------------------
-st.title("🕹️ MDP Maze Robot Navigation")
-st.markdown("Visualizing the robot navigating through corridors with predefined thick walls and a moving cursor.")
+st.title("📦 Warehouse AGV & Snake MDP Navigation")
+st.markdown("Blueprint simulation showing the AGV cursor navigating warehouse storage aisles with entry/exit bays and a glowing snake trace path.")
 
-col_left, col_right = st.columns([2.2, 1.0])
+col_left, col_right = st.columns([2.3, 1.0])
 
 with col_left:
     btn1, btn2, btn3, btn4 = st.columns([1, 1, 1, 2])
@@ -142,7 +136,7 @@ with col_left:
     plot_placeholder = st.empty()
 
 with col_right:
-    st.subheader("📊 Status")
+    st.subheader("📊 AGV Status")
     m1, m2 = st.columns(2)
     m1.metric("Progress", f"{st.session_state.idx} / {max_steps}")
     m2.metric("Reward", st.session_state.cum_reward)
@@ -157,50 +151,63 @@ with col_right:
     st.code("\n".join(st.session_state.log[-12:]) if st.session_state.log else "—", language=None)
 
 # ---------------------------------------------------------------------
-# 5. Maze Rendering (Black Background, Thick White Walls, Moving Cursor)
+# 5. Warehouse Blueprint & Snake Trace Rendering
 # ---------------------------------------------------------------------
-def render_maze():
+def render_warehouse():
     ss = st.session_state
-    fig, ax = plt.subplots(figsize=(7, 5.5))
+    fig, ax = plt.subplots(figsize=(7, 5.8))
     
-    # Set dark aesthetic matching reference image
-    fig.patch.set_facecolor('#000000')
-    ax.set_facecolor('#000000')
+    # Architectural Blueprint Dark Theme
+    fig.patch.set_facecolor('#0b0f19')
+    ax.set_facecolor('#0b0f19')
     ax.set_aspect('equal')
 
-    # Predefined thick maze room boundaries
-    ax.plot([0, 10, 10, 0, 0], [0, 0, 10, 10, 0], color='white', linewidth=4, label="Corridor Walls")
-    ax.plot([2, 8, 8, 2, 2], [2, 2, 8, 8, 2], color='white', linewidth=3, alpha=0.7, label="Inner Island")
+    # Warehouse Outer Walls
+    ax.plot([0, 12, 12, 0, 0], [0, 0, 10, 10, 0], color='#38bdf8', linewidth=3.5, label="Warehouse Walls")
 
-    # Plot mapped adjacent walls from sensor readings
-    if ss.wall_points:
-        wx = [p['x'] for p in ss.wall_points]
-        wy = [p['y'] for p in ss.wall_points]
-        ax.scatter(wx, wy, color='#ffffff', s=12, alpha=0.5, label="Sensor Wall Trace")
+    # Entry and Exit Gates
+    ax.plot([0, 0], [2, 4], color='#22c55e', linewidth=6, label="Entry Gate")
+    ax.plot([12, 12], [6, 8], color='#ef4444', linewidth=6, label="Exit Gate")
 
-    # Plot Robot Trajectory Trail inside the corridors
+    # Internal Fulfillment Storage Racks (Obstacles)
+    racks = [
+        ([2.5, 5.0, 5.0, 2.5, 2.5], [2.0, 2.0, 4.5, 4.5, 2.0]),
+        ([7.0, 9.5, 9.5, 7.0, 7.0], [2.0, 2.0, 4.5, 4.5, 2.0]),
+        ([2.5, 5.0, 5.0, 2.5, 2.5], [5.5, 5.5, 8.0, 8.0, 5.5]),
+        ([7.0, 9.5, 9.5, 7.0, 7.0], [5.5, 5.5, 8.0, 8.0, 5.5]),
+    ]
+    for rx, ry in racks:
+        ax.fill(rx, ry, color='#1e293b', edgecolor='#64748b', linewidth=1.5)
+        ax.text(np.mean(rx), np.mean(ry), "STORAGE RACK", color='#64748b', fontsize=7, ha='center', va='center', fontweight='bold', alpha=0.7)
+
+    # Snake Xenzia Style Glowing Trail (limited to trail_length for clean fading effect)
     if len(ss.trajectory) > 1:
-        tx = [p['x'] for p in ss.trajectory]
-        ty = [p['y'] for p in ss.trajectory]
-        ax.plot(tx, ty, color='#3a86ff', linewidth=2, alpha=0.8, label="Robot Trail")
+        recent_traj = ss.trajectory[-trail_length:]
+        tx = [p['x'] for p in recent_traj]
+        ty = [p['y'] for p in recent_traj]
+        
+        # Draw fading snake body segments
+        for i in range(len(tx) - 1):
+            alpha_val = (i + 1) / len(tx)
+            ax.plot(tx[i:i+2], ty[i:i+2], color='#38bdf8', linewidth=3.5, alpha=alpha_val)
 
-    # Plot Moving Cursor (Robot) in Bright Red / Cyan
-    ax.scatter([ss.x], [ss.y], color='#ff0054', s=180, zorder=5, marker='s', edgecolors='white', linewidths=1.5, label="Robot Cursor")
+    # AGV Cursor Head (Snake Head)
+    ax.scatter([ss.x], [ss.y], color='#facc15', s=200, zorder=5, marker='s', edgecolors='white', linewidths=1.5, label="AGV Cursor")
 
-    ax.set_xlim(-1, 11)
+    ax.set_xlim(-1, 13)
     ax.set_ylim(-1, 11)
-    ax.axis('off') # Hide axis ticks for clean maze look
+    ax.axis('off')
     
     plot_placeholder.pyplot(fig, use_container_width=True)
     plt.close(fig)
 
-render_maze()
+render_warehouse()
 
 if st.session_state.running and not st.session_state.finished:
     for _ in range(15):
         if not st.session_state.running or st.session_state.finished:
             break
         step_simulation()
-        render_maze()
+        render_warehouse()
         time.sleep(sim_speed)
     st.rerun()
