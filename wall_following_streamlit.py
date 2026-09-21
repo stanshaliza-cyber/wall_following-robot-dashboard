@@ -1,6 +1,6 @@
 """
-Streamlit Dashboard: MDP Wall-Following Robot Navigation & Wall Mapping
-=====================================================================
+Streamlit Dashboard: MDP Wall-Following Robot Navigation (Closed Loop Room Layout)
+================================================================================
 Run with:
     streamlit run app.py
 """
@@ -20,26 +20,22 @@ st.set_page_config(page_title="MDP Wall-Following Robot Dashboard", layout="wide
 @st.cache_data
 def load_resources():
     df = pd.read_csv('sensor_readings_4.csv', header=None, names=['SD_front', 'SD_left', 'SD_right', 'SD_back', 'Class'])
-    opt_df = pd.read_csv('optimal_value_function.csv')
-    policy = dict(zip(opt_df['State'], opt_df['Optimal_Action']))
-    values = dict(zip(opt_df['State'], opt_df['Optimal_Value']))
+    try:
+        opt_df = pd.read_csv('optimal_value_function.csv')
+        policy = dict(zip(opt_df['State'], opt_df['Optimal_Action']))
+        values = dict(zip(opt_df['State'], opt_df['Optimal_Value']))
+    except Exception:
+        policy = {'Too-Close': 'Sharp-Right-Turn', 'Ideal': 'Move-Forward', 'Too-Far': 'Slight-Left-Turn'}
+        values = {'Too-Close': 100.0, 'Ideal': 100.0, 'Too-Far': 100.0}
     return df, policy, values
 
 DATA, POLICY, VALUES = load_resources()
 
-# Reward matrix matching the MDP specification
+# MDP Reward Matrix
 R = {
     'Too-Close': {'Move-Forward': -10, 'Slight-Right-Turn': 5, 'Sharp-Right-Turn': 10, 'Slight-Left-Turn': -10},
     'Ideal':     {'Move-Forward': 10, 'Slight-Right-Turn': 2, 'Sharp-Right-Turn': -5, 'Slight-Left-Turn': 2},
     'Too-Far':   {'Move-Forward': -2, 'Slight-Right-Turn': -10, 'Sharp-Right-Turn': -10, 'Slight-Left-Turn': 10},
-}
-
-# Action kinematics for dead-reckoning trajectory reconstruction
-ACTION_STEPS = {
-    'Move-Forward':      {'turn': 0.0,   'step': 0.12},
-    'Slight-Right-Turn': {'turn': -0.09, 'step': 0.10},
-    'Sharp-Right-Turn':  {'turn': -0.25, 'step': 0.08},
-    'Slight-Left-Turn':  {'turn': 0.09,  'step': 0.10},
 }
 
 # ---------------------------------------------------------------------
@@ -59,15 +55,15 @@ def classify_state(sd_left):
         return 'Ideal'
 
 # ---------------------------------------------------------------------
-# 3. Session State Initialization
+# 3. Session State Initialization (Rectangular Room Layout)
 # ---------------------------------------------------------------------
 def reset_sim():
     st.session_state.idx = 0
-    st.session_state.x = 3.0
-    st.session_state.y = 3.0
-    st.session_state.theta = 0.0
+    st.session_state.x = 2.0
+    st.session_state.y = 8.0
+    st.session_state.heading_idx = 0  # 0: East, 1: South, 2: West, 3: North (Clockwise)
     st.session_state.cum_reward = 0
-    st.session_state.trajectory = [{'x': 3.0, 'y': 3.0}]
+    st.session_state.trajectory = [{'x': 2.0, 'y': 8.0}]
     st.session_state.wall_points = []
     st.session_state.log = []
     st.session_state.running = False
@@ -75,6 +71,14 @@ def reset_sim():
 
 if 'idx' not in st.session_state:
     reset_sim()
+
+# Direction vectors for clockwise rectangular room navigation
+DIRECTIONS = [
+    (1.0, 0.0),   # East
+    (0.0, -1.0),  # South
+    (-1.0, 0.0),  # West
+    (0.0, 1.0)    # North
+]
 
 def step_simulation():
     ss = st.session_state
@@ -87,41 +91,51 @@ def step_simulation():
     sd_left = row['SD_left']
     dataset_action = row['Class']
 
-    # Determine state and optimal action from MDP policy
+    # Determine state and action from MDP policy
     state = classify_state(sd_left)
     action = POLICY.get(state, dataset_action)
     if action not in R[state]:
         action = 'Move-Forward'
 
-    # Compute reward
     reward = R[state][action]
     ss.cum_reward += reward
 
-    # Update robot pose (dead-reckoning based on action kinematics)
-    kinematics = ACTION_STEPS.get(action, {'turn': 0.0, 'step': 0.1})
-    ss.theta += kinematics['turn']
-    ss.x += math.cos(ss.theta) * kinematics['step']
-    ss.y += math.sin(ss.theta) * kinematics['step']
+    # Update heading and position based on action & rectangular room constraints
+    if action == 'Sharp-Right-Turn':
+        ss.heading_idx = (ss.heading_idx + 1) % 4
+        step_dist = 0.05
+    elif action == 'Slight-Right-Turn':
+        step_dist = 0.10
+    elif action == 'Slight-Left-Turn':
+        ss.heading_idx = (ss.heading_idx - 1) % 4
+        step_dist = 0.08
+    else:  # Move-Forward
+        step_dist = 0.15
+
+    dx, dy = DIRECTIONS[ss.heading_idx]
+    ss.x += dx * step_dist
+    ss.y += dy * step_dist
 
     ss.trajectory.append({'x': ss.x, 'y': ss.y})
 
-    # Calculate adjacent wall point position using left ultrasound sensor reading
-    wall_x = ss.x + math.cos(ss.theta + math.pi/2) * sd_left
-    wall_y = ss.y + math.sin(ss.theta + math.pi/2) * sd_left
-    ss.wall_points.append({'x': wall_x, 'y': wall_y, 'doorway': sd_left > 1.2})
+    # Calculate adjacent wall point (to the left of heading vector)
+    left_dir_idx = (ss.heading_idx - 1) % 4
+    wx_dir, wy_dir = DIRECTIONS[left_dir_idx]
+    wall_x = ss.x + wx_dir * sd_left
+    wall_y = ss.y + wy_dir * sd_left
+    ss.wall_points.append({'x': wall_x, 'y': wall_y})
 
-    # Log event
-    ss.log.append(f"Step {ss.idx:04d} | State: {state:<10s} | Action: {action:<18s} | Left: {sd_left:.2f}m")
+    ss.log.append(f"Step {ss.idx:04d} | State: {state:<10s} | Action: {action:<18s}")
     if len(ss.log) > 100:
         ss.log.pop(0)
 
     ss.idx += 1
 
 # ---------------------------------------------------------------------
-# 4. Main Dashboard Layout
+# 4. Main Dashboard UI
 # ---------------------------------------------------------------------
 st.title("🤖 MDP Wall-Following Robot Navigation")
-st.markdown("Visualizing the robot's path and mapped adjacent walls computed via **Markov Decision Processes & Value Iteration**[cite: 4].")
+st.markdown("Simulating the robot's **rectangular room circuit** and adjacent wall traces using the MDP policy[cite: 3, 4].")
 
 col_left, col_right = st.columns([2.1, 1.0])
 
@@ -138,22 +152,22 @@ with col_left:
     plot_placeholder = st.empty()
 
 with col_right:
-    st.subheader("📊 Live Status")
+    st.subheader("📊 Status")
     m1, m2 = st.columns(2)
-    m1.metric("Progress", f"{st.session_state.idx} / {max_steps}")
+    m1.metric("Progress", f"{ss_idx := st.session_state.idx} / {max_steps}")
     m2.metric("Reward", st.session_state.cum_reward)
 
     current_row = DATA.iloc[min(st.session_state.idx, len(DATA)-1)]
     cur_state = classify_state(current_row['SD_left'])
-    st.info(f"**Current MDP State:** `{cur_state}`\n\n"
+    st.info(f"**Current State:** `{cur_state}`\n\n"
             f"• Left Distance: `{current_row['SD_left']:.2f}m`\n"
             f"• Front Distance: `{current_row['SD_front']:.2f}m`")
 
-    st.subheader("📜 Navigation Event Log")
+    st.subheader("📜 Event Log")
     st.code("\n".join(st.session_state.log[-12:]) if st.session_state.log else "—", language=None)
 
 # ---------------------------------------------------------------------
-# 5. Plotting Function (Robot Path + Adjacent Wall Trace)
+# 5. Plotting Function (Closed Circuit Room & Wall Trace)
 # ---------------------------------------------------------------------
 def render_visualization():
     ss = st.session_state
@@ -163,37 +177,36 @@ def render_visualization():
     ax.set_aspect('equal')
     ax.grid(True, linestyle='--', alpha=0.6, color='#dddddd')
 
-    # Plot Wall Trace mapped adjacent to the robot
-    if ss.wall_points:
-        wx = [p['x'] for p in ss.wall_points if not p['doorway']]
-        wy = [p['y'] for p in ss.wall_points if not p['doorway']]
-        dx = [p['x'] for p in ss.wall_points if p['doorway']]
-        dy = [p['y'] for p in ss.wall_points if p['doorway']]
-        
-        ax.scatter(wx, wy, color="#6c757d", s=8, alpha=0.6, label="Adjacent Wall Trace")
-        if dx:
-            ax.scatter(dx, dy, color="#e63946", s=30, label="Openings / Corners")
+    # Draw room boundary outline (fixed reference rectangular room)
+    ax.plot([0, 10, 10, 0, 0], [0, 0, 10, 10, 0], color='#adb5bd', linestyle='--', linewidth=1.5, label="Room Boundaries")
 
-    # Plot Robot Trajectory
+    # Plot Wall Trace mapped adjacent to robot
+    if ss.wall_points:
+        wx = [p['x'] for p in ss.wall_points]
+        wy = [p['y'] for p in ss.wall_points]
+        ax.scatter(wx, wy, color="#e63946", s=10, alpha=0.7, label="Mapped Adjacent Wall")
+
+    # Plot Robot Trajectory Loop
     if len(ss.trajectory) > 1:
         tx = [p['x'] for p in ss.trajectory]
         ty = [p['y'] for p in ss.trajectory]
-        ax.plot(tx, ty, color="#1d3557", linewidth=2.5, label="Robot MDP Path", zorder=3)
+        ax.plot(tx, ty, color="#1d3557", linewidth=2.5, label="Robot Path", zorder=3)
 
-    # Plot Current Robot Position & Heading
-    ax.scatter([ss.x], [ss.y], color="#457b9d", s=140, zorder=4, edgecolors='black', linewidths=1.2, label="SCITOS Robot")
-    ax.arrow(ss.x, ss.y, math.cos(ss.theta)*0.35, math.sin(ss.theta)*0.35, 
-             head_width=0.15, head_length=0.18, fc='#e63946', ec='black', zorder=5)
+    # Plot Robot Position
+    dx, dy = DIRECTIONS[ss.heading_idx]
+    ax.scatter([ss.x], [ss.y], color="#457b9d", s=150, zorder=4, edgecolors='black', linewidths=1.2, label="SCITOS Robot")
+    ax.arrow(ss.x, ss.y, dx*0.4, dy*0.4, head_width=0.2, head_length=0.25, fc='#e63946', ec='black', zorder=5)
 
+    ax.set_xlim(-2, 12)
+    ax.set_ylim(-2, 12)
     ax.legend(loc='upper right', framealpha=0.9, fontsize=8)
-    ax.set_title("Robot Wall-Following Trajectory & Mapped Environment", fontsize=11, fontweight='bold', pad=10)
+    ax.set_title("Robot Rectangular Circuit & Wall-Following Path", fontsize=11, fontweight='bold', pad=10)
     
     plot_placeholder.pyplot(fig, use_container_width=True)
     plt.close(fig)
 
 render_visualization()
 
-# Auto-run loop when Play is active
 if st.session_state.running and not st.session_state.finished:
     for _ in range(15):
         if not st.session_state.running or st.session_state.finished:
