@@ -1,0 +1,4 @@
+State,Optimal_Action,Optimal_Value
+Too-Close,Sharp-Right-Turn,99.99916647515822
+Ideal,Move-Forward,99.99916647515822
+Too-Far,Slight-Left-Turn,99.99916647515822
