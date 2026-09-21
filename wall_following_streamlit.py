@@ -154,7 +154,7 @@ with col_left:
 with col_right:
     st.subheader("📊 Status")
     m1, m2 = st.columns(2)
-    m1.metric("Progress", f"{ss_idx := st.session_state.idx} / {max_steps}")
+    m1.metric("Progress", f"{st.session_state.idx} / {max_steps}")
     m2.metric("Reward", st.session_state.cum_reward)
 
     current_row = DATA.iloc[min(st.session_state.idx, len(DATA)-1)]
