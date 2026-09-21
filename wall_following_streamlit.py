@@ -185,9 +185,9 @@ def render_warehouse():
     # Warehouse Outer Walls
     ax.plot([0, 12, 12, 0, 0], [0, 0, 10, 10, 0], color='#38bdf8', linewidth=3.5, label="Warehouse Walls")
 
-    # Dynamic Entry and Exit Gates based on path start and end
-    ax.scatter([ENTRY_POS['x']], [ENTRY_POS['y']], color='#22c55e', s=250, zorder=6, marker='o', edgecodes='white', linewidths=2, label="Entry Gate")
-    ax.scatter([EXIT_POS['x']], [EXIT_POS['y']], color='#ef4444', s=250, zorder=6, marker='X', edgecodes='white', linewidths=2, label="Exit Gate")
+    # Dynamic Entry and Exit Gates based on path start and end (Fixed edgecolors spelling)
+    ax.scatter([ENTRY_POS['x']], [ENTRY_POS['y']], color='#22c55e', s=250, zorder=6, marker='o', edgecolors='white', linewidths=2, label="Entry Gate")
+    ax.scatter([EXIT_POS['x']], [EXIT_POS['y']], color='#ef4444', s=250, zorder=6, marker='X', edgecolors='white', linewidths=2, label="Exit Gate")
 
     # Internal Fulfillment Storage Racks
     racks = [
@@ -205,14 +205,14 @@ def render_warehouse():
     cur_pos = PRECOMPUTED_TRAJ[current_idx]
     cx, cy = cur_pos['x'], cur_pos['y']
 
-    # FULL TRAJECTORY TRACE (No length limit, shows entire path travelled so far)
+    # FULL TRAJECTORY TRACE
     if current_idx > 0:
         full_traj = PRECOMPUTED_TRAJ[: current_idx + 1]
         tx = [p['x'] for p in full_traj]
         ty = [p['y'] for p in full_traj]
         ax.plot(tx, ty, color='#38bdf8', linewidth=2.5, alpha=0.85, label="Travelled Path Trace")
 
-    # AGV Cursor Head
+    # AGV Cursor Head (Fixed edgecolors spelling)
     ax.scatter([cx], [cy], color='#facc15', s=200, zorder=7, marker='s', edgecolors='white', linewidths=1.5, label="AGV Cursor")
 
     ax.set_xlim(-1, 13)
